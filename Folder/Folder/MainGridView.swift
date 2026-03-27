@@ -584,6 +584,8 @@ struct LinkComposerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var url = ""
     @State private var title = ""
+    @State private var linkDescription = ""
+    @State private var fetcher = LinkMetadataFetcher()
     @FocusState private var focused: Bool
 
     private var postManager: WordPressPostManager { WordPressPostManager(token: token, site: site) }
@@ -597,9 +599,50 @@ struct LinkComposerSheet: View {
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                         .focused($focused)
+
+                    if fetcher.isFetching {
+                        HStack(spacing: 8) {
+                            ProgressView().scaleEffect(0.75)
+                            Text("Fetching page info…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if fetcher.fetchedTitle != nil || fetcher.fetchedDescription != nil {
+                        HStack(alignment: .top, spacing: 10) {
+                            Group {
+                                if let favicon = fetcher.favicon {
+                                    Image(uiImage: favicon)
+                                        .resizable()
+                                        .scaledToFill()
+                                } else {
+                                    Image(systemName: "globe")
+                                        .foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                }
+                            }
+                            .frame(width: 24, height: 24)
+                            .clipShape(RoundedRectangle(cornerRadius: 5))
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                if let t = fetcher.fetchedTitle {
+                                    Text(t).font(.subheadline).lineLimit(2)
+                                }
+                                if let d = fetcher.fetchedDescription {
+                                    Text(d).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
                 }
+
                 Section("Title (optional)") {
-                    TextField("Description", text: $title)
+                    TextField("Add a title", text: $title)
+                }
+
+                Section("Description (optional)") {
+                    TextField("Add a description", text: $linkDescription, axis: .vertical)
+                        .lineLimit(3...)
                 }
             }
             .navigationTitle("Link")
@@ -608,8 +651,8 @@ struct LinkComposerSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Post") {
-                        let u = url; let t = title; let pm = postManager
-                        onPost("Link") { try await pm.postLink(url: u, title: t) }
+                        let u = url; let t = title; let d = linkDescription; let pm = postManager
+                        onPost("Link") { try await pm.postLink(url: u, title: t, description: d) }
                         dismiss()
                     }
                     .disabled(url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -619,6 +662,18 @@ struct LinkComposerSheet: View {
         .task {
             try? await Task.sleep(for: .milliseconds(300))
             focused = true
+        }
+        .onChange(of: url) { _, newURL in
+            // Clear fields and re-fetch whenever the URL changes
+            title = ""
+            linkDescription = ""
+            fetcher.schedule(urlString: newURL)
+        }
+        .onChange(of: fetcher.fetchedTitle) { _, newTitle in
+            title = newTitle ?? ""
+        }
+        .onChange(of: fetcher.fetchedDescription) { _, newDesc in
+            linkDescription = newDesc ?? ""
         }
     }
 }

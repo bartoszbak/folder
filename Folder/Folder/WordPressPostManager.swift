@@ -30,9 +30,10 @@ struct WordPressPostManager {
         try await createPost(title: title, content: text, format: "aside")
     }
 
-    func postLink(url: String, title: String) async throws {
+    func postLink(url: String, title: String, description: String = "") async throws {
         let resolvedTitle = title.isEmpty ? (URL(string: url)?.host ?? url) : title
-        let content = "<a href=\"\(url)\">\(resolvedTitle)</a>"
+        var content = "<a href=\"\(url)\">\(resolvedTitle)</a>"
+        if !description.isEmpty { content += "\n\n<p>\(description)</p>" }
         try await createPost(title: resolvedTitle, content: content, format: "link")
     }
 
