@@ -783,9 +783,29 @@ struct PostDetailView: View {
     }
 
     private func setupVideoPlayer() async {
-        // Play the VideoPress CDN MP4 directly — no API calls needed.
-        guard let url = post.fileURL,
-              url.host?.contains("videos.files.wordpress.com") == true else { return }
+        guard let url = post.fileURL else { return }
+
+        // videopress:// scheme comes from shortcode parsing in fileURL.
+        // videos.files.wordpress.com URLs may have the wrong filename (constructed before the fix),
+        // but the GUID is always pathComponents[1] — resolve both via the VideoPress API.
+        let guid: String?
+        if url.scheme == "videopress" {
+            guid = url.host
+        } else if url.host == "videos.files.wordpress.com" {
+            guid = url.pathComponents.dropFirst().first
+        } else {
+            guid = nil
+        }
+
+        if let guid, !guid.isEmpty {
+            if let playbackURL = await postManager.fetchVideoPressPlaybackURL(guid: guid) {
+                videoPlayer = AVPlayer(url: playbackURL)
+            }
+            return
+        }
+
+        // Any other direct https video URL.
+        guard url.scheme == "https" else { return }
         videoPlayer = AVPlayer(url: url)
     }
 
