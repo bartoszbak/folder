@@ -91,32 +91,38 @@ struct MainGridView: View {
                 description: Text("Tap + to add your first post.")
             )
         } else {
-            List {
-                ForEach(filteredPosts) { post in
-                    ZStack(alignment: .leading) {
-                        if let token = auth.token, let site = auth.selectedSite {
-                            NavigationLink {
+            ScrollView {
+                LazyVGrid(
+                    columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)],
+                    spacing: 16
+                ) {
+                    ForEach(filteredPosts) { post in
+                        NavigationLink {
+                            if let token = auth.token, let site = auth.selectedSite {
                                 PostDetailView(post: post, token: token, site: site) {
                                     posts.removeAll { $0.id == post.id }
                                 }
-                            } label: { EmptyView() }
-                                .opacity(0)
+                            }
+                        } label: {
+                            PostGridCard(post: post)
                         }
-                        PostRowView(post: post)
+                        .buttonStyle(.plain)
+                    }
+                    if hasMore {
+                        Color.clear
+                            .frame(height: 1)
+                            .gridCellColumns(2)
+                            .onAppear { Task { await loadMorePosts() } }
+                        if isLoadingMore {
+                            ProgressView()
+                                .gridCellColumns(2)
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                        }
                     }
                 }
-                if hasMore {
-                    Color.clear
-                        .frame(height: 1)
-                        .listRowSeparator(.hidden)
-                        .onAppear { Task { await loadMorePosts() } }
-                    if isLoadingMore {
-                        HStack { Spacer(); ProgressView(); Spacer() }
-                            .listRowSeparator(.hidden)
-                    }
-                }
+                .padding(16)
             }
-            .listStyle(.plain)
             .refreshable { await loadPosts() }
         }
     }
@@ -544,6 +550,211 @@ struct LinkThumbnailView: View {
                 image = cached
                 return
             }
+            let provider = LPMetadataProvider()
+            provider.shouldFetchSubresources = true
+            guard let meta = try? await provider.startFetchingMetadata(for: url) else { return }
+            let itemProvider = meta.imageProvider ?? meta.iconProvider
+            guard let itemProvider else { return }
+            await withCheckedContinuation { cont in
+                itemProvider.loadObject(ofClass: UIImage.self) { obj, _ in
+                    if let img = obj as? UIImage {
+                        linkImageCache.setObject(img, forKey: key)
+                        Task { @MainActor in image = img }
+                    }
+                    cont.resume()
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Grid Card
+
+struct PostGridCard: View {
+    let post: WordPressPost
+
+    private var isFile: Bool { post.tagSlugs.contains("folder-file") }
+
+    var body: some View {
+        Color.clear
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                Group {
+                    if isFile {
+                        FileGridCard(post: post)
+                    } else if post.format == "aside" {
+                        TextGridCard(post: post)
+                    } else if post.format == "link" {
+                        LinkGridCard(post: post)
+                    } else {
+                        PhotoGridCard(post: post)
+                    }
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+// MARK: Photo card
+
+private struct PhotoGridCard: View {
+    let post: WordPressPost
+
+    var body: some View {
+        Group {
+            if let urlStr = post.featuredImageURL, let url = URL(string: urlStr) {
+                AsyncImage(url: url) { phase in
+                    if let img = phase.image { img.resizable().scaledToFill() }
+                    else { Color(.systemGray5) }
+                }
+            } else {
+                Color(.systemGray5)
+            }
+        }
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.black.opacity(0.08), lineWidth: 1))
+    }
+}
+
+// MARK: Text card
+
+private struct TextGridCard: View {
+    let post: WordPressPost
+
+    private var textContent: String {
+        (post.rawContent ?? post.displayTitle)
+            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Color(.systemGray6)
+            Text(textContent)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.primary)
+                .padding(16)
+        }
+    }
+}
+
+// MARK: Link card
+
+private struct LinkGridCard: View {
+    let post: WordPressPost
+
+    var body: some View {
+        ZStack {
+            if let url = post.linkURL {
+                LinkCardBackground(url: url)
+            } else {
+                Color(.systemGray6)
+            }
+
+            VStack {
+                HStack {
+                    Spacer()
+                    GridTypeBadge(systemImage: "link")
+                }
+                Spacer()
+                Text(post.displayTitle)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.black.opacity(0.06), lineWidth: 1))
+    }
+}
+
+// MARK: File card
+
+private struct FileGridCard: View {
+    let post: WordPressPost
+
+    private var fileTypeLabel: String {
+        let ext = (post.displayTitle as NSString).pathExtension.lowercased()
+        switch ext {
+        case "mp4", "mov", "avi", "mkv", "m4v": return "Video file"
+        case "mp3", "m4a", "wav", "aac":        return "Audio file"
+        case "pdf":                              return "PDF"
+        case "doc", "docx":                      return "Document"
+        case "xls", "xlsx", "csv":              return "Spreadsheet"
+        case "zip", "rar", "gz", "tar":         return "Archive"
+        default:                                return "File"
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            Color(.systemGray6)
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    GridTypeBadge(systemImage: PostRowView.fileIcon(for: post.displayTitle).symbol)
+                }
+                Spacer()
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(fileTypeLabel)
+                        .font(.system(size: 15, weight: .medium))
+                    Text(post.displayTitle)
+                        .font(.system(size: 15, weight: .medium))
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .foregroundStyle(.primary)
+            .padding(16)
+        }
+    }
+}
+
+// MARK: Shared grid subviews
+
+private struct GridTypeBadge: View {
+    let systemImage: String
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 22)
+                .fill(.white)
+                .frame(width: 44, height: 44)
+            Image(systemName: systemImage)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.primary)
+        }
+    }
+}
+
+private struct LinkCardBackground: View {
+    let url: URL
+    @State private var image: UIImage?
+
+    var body: some View {
+        GeometryReader { geo in
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .clipped()
+            } else {
+                Color(.systemGray6)
+                    .frame(width: geo.size.width, height: geo.size.height)
+            }
+        }
+        .task(id: url.absoluteString) {
+            let key = url.absoluteString as NSString
+            if let cached = linkImageCache.object(forKey: key) { image = cached; return }
             let provider = LPMetadataProvider()
             provider.shouldFetchSubresources = true
             guard let meta = try? await provider.startFetchingMetadata(for: url) else { return }
