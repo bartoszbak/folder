@@ -17,6 +17,7 @@ extension WordPressSite: Codable {
         case name
         case url = "URL"
         case icon
+        case iconURL  // flat key used when persisting to UserDefaults
     }
 
     init(from decoder: Decoder) throws {
@@ -24,7 +25,9 @@ extension WordPressSite: Codable {
         id = try c.decode(Int.self, forKey: .id)
         name = try c.decode(String.self, forKey: .name)
         url = try c.decode(String.self, forKey: .url)
+        // API response uses nested icon.img; persisted JSON uses flat iconURL
         iconURL = try c.decodeIfPresent(Icon.self, forKey: .icon)?.img
+            ?? c.decodeIfPresent(String.self, forKey: .iconURL)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -32,6 +35,7 @@ extension WordPressSite: Codable {
         try c.encode(id, forKey: .id)
         try c.encode(name, forKey: .name)
         try c.encode(url, forKey: .url)
+        try c.encodeIfPresent(iconURL, forKey: .iconURL)
     }
 }
 

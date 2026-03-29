@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import Photos
 import UniformTypeIdentifiers
 import QuickLook
 import QuickLookThumbnailing
@@ -45,6 +46,11 @@ struct MainGridView: View {
     @State private var activeFilter: PostType? = nil
     @State private var hasLoaded = false
 
+    // Pagination
+    @State private var isLoadingMore = false
+    @State private var hasMore = true
+    private let pageSize = 20
+
     // Posting status
     @State private var postStatus: PostStatus?
     @State private var postingTask: Task<Void, Never>?
@@ -85,17 +91,29 @@ struct MainGridView: View {
                 description: Text("Tap + to add your first post.")
             )
         } else {
-            List(filteredPosts) { post in
-                ZStack(alignment: .leading) {
-                    if let token = auth.token, let site = auth.selectedSite {
-                        NavigationLink {
-                            PostDetailView(post: post, token: token, site: site) {
-                                posts.removeAll { $0.id == post.id }
-                            }
-                        } label: { EmptyView() }
-                            .opacity(0)
+            List {
+                ForEach(filteredPosts) { post in
+                    ZStack(alignment: .leading) {
+                        if let token = auth.token, let site = auth.selectedSite {
+                            NavigationLink {
+                                PostDetailView(post: post, token: token, site: site) {
+                                    posts.removeAll { $0.id == post.id }
+                                }
+                            } label: { EmptyView() }
+                                .opacity(0)
+                        }
+                        PostRowView(post: post)
                     }
-                    PostRowView(post: post)
+                }
+                if hasMore {
+                    Color.clear
+                        .frame(height: 1)
+                        .listRowSeparator(.hidden)
+                        .onAppear { Task { await loadMorePosts() } }
+                    if isLoadingMore {
+                        HStack { Spacer(); ProgressView(); Spacer() }
+                            .listRowSeparator(.hidden)
+                    }
                 }
             }
             .listStyle(.plain)
@@ -218,17 +236,26 @@ struct MainGridView: View {
         let captured = items
         selectedPhotoItems = []
 
-        var photos: [Data] = []
+        var photos: [(data: Data, filename: String)] = []
         for item in captured {
-            if let data = try? await item.loadTransferable(type: Data.self) {
-                photos.append(data)
+            guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
+            var filename = "photo.jpg"
+            if let identifier = item.itemIdentifier {
+                let result = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
+                if let asset = result.firstObject {
+                    let resources = PHAssetResource.assetResources(for: asset)
+                    if let resource = resources.first(where: { $0.type == .photo || $0.type == .fullSizePhoto }) {
+                        filename = resource.originalFilename
+                    }
+                }
             }
+            photos.append((data, filename))
         }
         guard let pm = postManager, !photos.isEmpty else { return }
         let label = photos.count == 1 ? "Photo" : "\(photos.count) photos"
         startPosting(label: label) {
-            for data in photos {
-                try await pm.postPhoto(data: data, caption: "")
+            for photo in photos {
+                try await pm.postPhoto(data: photo.data, filename: photo.filename, caption: "")
             }
         }
     }
@@ -275,15 +302,26 @@ struct MainGridView: View {
         guard let pm = postManager else { return }
         isLoading = true
         loadError = nil
-        defer {
-            isLoading = false
-            hasLoaded = true
-        }
+        hasMore = true
+        defer { isLoading = false; hasLoaded = true }
         do {
-            posts = try await pm.fetchPosts()
+            let fetched = try await pm.fetchPosts(number: pageSize)
+            posts = fetched
+            hasMore = fetched.count == pageSize
         } catch {
             loadError = error.localizedDescription
         }
+    }
+
+    private func loadMorePosts() async {
+        guard !isLoadingMore, hasMore, let pm = postManager else { return }
+        isLoadingMore = true
+        defer { isLoadingMore = false }
+        do {
+            let fetched = try await pm.fetchPosts(number: pageSize, offset: posts.count)
+            posts.append(contentsOf: fetched)
+            hasMore = fetched.count == pageSize
+        } catch {}
     }
 }
 
@@ -539,6 +577,7 @@ struct PostDetailView: View {
     @State private var previewURL: URL?
     @State private var isDownloading = false
     @State private var videoPlayer: AVPlayer?
+    @State private var fullscreenPhotoURL: URL? = nil
 
     @State private var pdfFirstPage: UIImage?
 
@@ -623,6 +662,33 @@ struct PostDetailView: View {
             Text(deleteError ?? "")
         }
         .quickLookPreview($previewURL)
+        .fullScreenCover(isPresented: Binding(
+            get: { fullscreenPhotoURL != nil },
+            set: { if !$0 { fullscreenPhotoURL = nil } }
+        )) {
+            ZStack(alignment: .topTrailing) {
+                Color.black.ignoresSafeArea()
+                if let url = fullscreenPhotoURL {
+                    AsyncImage(url: url) { phase in
+                        if let image = phase.image {
+                            image.resizable().scaledToFit()
+                        } else if phase.error == nil {
+                            ProgressView().tint(.white)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                Button { fullscreenPhotoURL = nil } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title)
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(.white)
+                        .padding()
+                }
+            }
+            .ignoresSafeArea()
+            .onTapGesture { fullscreenPhotoURL = nil }
+        }
         .task {
             if PostRowView.videoExtensions.contains(fileExt) {
                 await setupVideoPlayer()
@@ -651,6 +717,7 @@ struct PostDetailView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 16)
+            .onTapGesture { Task { await downloadAndPreviewPhoto(url: url) } }
         } else if post.format == "link", let url = post.linkURL {
             Button { UIApplication.shared.open(url) } label: {
                 HStack(spacing: 14) {
@@ -686,6 +753,7 @@ struct PostDetailView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 16)
+            .onTapGesture(count: 2) { fullscreenPhotoURL = url }
         } else if isFile && PostRowView.videoExtensions.contains(fileExt) {
             Group {
                 if let player = videoPlayer {
@@ -747,6 +815,19 @@ struct PostDetailView: View {
         }
     }
 
+    private func downloadAndPreviewPhoto(url: URL) async {
+        let filename = url.lastPathComponent.isEmpty ? "photo.jpg" : url.lastPathComponent
+        let dest = FileManager.default.temporaryDirectory
+            .appendingPathComponent("folder_photo_\(post.id)_\(filename)")
+        do {
+            if !FileManager.default.fileExists(atPath: dest.path) {
+                let (tmp, _) = try await URLSession.shared.download(from: url)
+                try FileManager.default.moveItem(at: tmp, to: dest)
+            }
+            previewURL = dest
+        } catch {}
+    }
+
     private func performCopy() {
         switch post.format {
         case "aside":
@@ -783,11 +864,12 @@ struct PostDetailView: View {
     }
 
     private func setupVideoPlayer() async {
-        guard let url = post.fileURL else { return }
+        guard let url = post.fileURL else {
+            print("[Video] fileURL is nil for post '\(post.displayTitle)' — rawContent: \(post.rawContent?.prefix(200) ?? "nil")")
+            return
+        }
 
-        // videopress:// scheme comes from shortcode parsing in fileURL.
-        // videos.files.wordpress.com URLs may have the wrong filename (constructed before the fix),
-        // but the GUID is always pathComponents[1] — resolve both via the VideoPress API.
+        // Resolve GUID-based URLs via the VideoPress API to get the actual CDN URL.
         let guid: String?
         if url.scheme == "videopress" {
             guid = url.host
@@ -800,11 +882,12 @@ struct PostDetailView: View {
         if let guid, !guid.isEmpty {
             if let playbackURL = await postManager.fetchVideoPressPlaybackURL(guid: guid) {
                 videoPlayer = AVPlayer(url: playbackURL)
+                return
             }
+            if url.scheme == "https" { videoPlayer = AVPlayer(url: url) }
             return
         }
 
-        // Any other direct https video URL.
         guard url.scheme == "https" else { return }
         videoPlayer = AVPlayer(url: url)
     }
@@ -1108,7 +1191,7 @@ struct AccountSheet: View {
                 }
                 Section("Logged as") {
                     HStack(spacing: 14) {
-                        AvatarButton(url: auth.user?.avatarURL, size: 72)
+                        AvatarButton(url: auth.user?.avatarURL, size: 36)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(auth.user?.displayName ?? "WordPress.com")
                                 .font(.headline)
@@ -1124,18 +1207,31 @@ struct AccountSheet: View {
 
                 if let site = auth.selectedSite {
                     Section("Posting to") {
-                        HStack {
+                        HStack(spacing: 12) {
+                            if let iconURLString = site.iconURL, let iconURL = URL(string: iconURLString) {
+                                AsyncImage(url: iconURL) { phase in
+                                    if let image = phase.image {
+                                        image.resizable().scaledToFill()
+                                    } else {
+                                        Color.secondary.opacity(0.15)
+                                    }
+                                }
+                                .frame(width: 36, height: 36)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(site.name).font(.body)
+                                Text(site.name).font(.headline)
                                 Text(site.url).font(.footnote).foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
                             }
                             Spacer()
                             if let url = URL(string: site.url) {
                                 Link(destination: url) {
                                     Image(systemName: "arrow.up.right")
                                         .font(.system(size: 16, weight: .medium))
-                                        .foregroundStyle(.primary)
                                 }
+                                .tint(.secondary)
                             }
                         }
                         .padding(.vertical, 2)
@@ -1143,11 +1239,18 @@ struct AccountSheet: View {
                 }
 
                 Section {
-                    Button("Disconnect", role: .destructive) {
+                    Button(role: .destructive) {
                         dismiss()
-                        auth.logout()
+                        Task {
+                            try? await Task.sleep(for: .milliseconds(400))
+                            auth.logout()
+                        }
+                    } label: {
+                        Text("Disconnect")
+                            .frame(maxWidth: .infinity, alignment: .center)
                     }
                 }
+                .listSectionSpacing(8)
             }
             .navigationTitle("Account")
             .navigationBarTitleDisplayMode(.inline)

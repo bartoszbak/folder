@@ -7,9 +7,12 @@ struct WordPressPostManager {
 
     // MARK: - Fetch
 
-    func fetchPosts(number: Int = 20) async throws -> [WordPressPost] {
+    func fetchPosts(number: Int = 20, offset: Int = 0) async throws -> [WordPressPost] {
         var components = URLComponents(string: "https://public-api.wordpress.com/rest/v1.1/sites/\(site.id)/posts")!
-        components.queryItems = [URLQueryItem(name: "number", value: "\(number)")]
+        components.queryItems = [
+            URLQueryItem(name: "number", value: "\(number)"),
+            URLQueryItem(name: "offset", value: "\(offset)")
+        ]
 
         var request = URLRequest(url: components.url!)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -38,10 +41,12 @@ struct WordPressPostManager {
         try await createPost(title: resolvedTitle, content: content, format: "link")
     }
 
-    func postPhoto(data: Data, caption: String) async throws {
-        let (mediaID, _) = try await uploadMedia(data: data, mimeType: "image/jpeg", filename: "photo.jpg")
+    func postPhoto(data: Data, filename: String = "photo.jpg", caption: String) async throws {
+        let mimeType = filename.lowercased().hasSuffix(".png") ? "image/png" : "image/jpeg"
+        let (mediaID, _) = try await uploadMedia(data: data, mimeType: mimeType, filename: filename)
+        let title = (filename as NSString).deletingPathExtension
         let content = caption.isEmpty ? "" : "<p>\(caption)</p>"
-        try await createPost(title: Self.timestampTitle("Photo"), content: content, featuredMediaID: mediaID, format: "image")
+        try await createPost(title: title.isEmpty ? Self.timestampTitle("Photo") : title, content: content, featuredMediaID: mediaID, format: "image")
     }
 
     func deletePost(id: Int) async throws {
@@ -157,15 +162,49 @@ struct WordPressPostManager {
         return try? Self.decoder.decode(MediaUploadResponse.MediaItem.self, from: data)
     }
 
-    /// Returns the best playback URL for a VideoPress video by querying the VideoPress API.
+    /// Returns the playback URL for a VideoPress video.
+    /// Tries the VideoPress API first, then scans the site's video media library by GUID.
     func fetchVideoPressPlaybackURL(guid: String) async -> URL? {
-        let url = URL(string: "https://public-api.wordpress.com/rest/v1.1/videos/\(guid)")!
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200,
-              let info = try? Self.decoder.decode(VideoPressInfo.self, from: data) else { return nil }
-        return info.bestURL
+        // 1. VideoPress API
+        let vpURL = URL(string: "https://public-api.wordpress.com/rest/v1.1/videos/\(guid)")!
+        var vpRequest = URLRequest(url: vpURL)
+        vpRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let (data, response) = try? await URLSession.shared.data(for: vpRequest),
+           (response as? HTTPURLResponse)?.statusCode == 200,
+           let info = try? Self.decoder.decode(VideoPressInfo.self, from: data),
+           let url = info.bestURL {
+            print("[VideoPress] API resolved \(guid) → \(url)")
+            return url
+        }
+        print("[VideoPress] API failed for \(guid), scanning media library…")
+
+        // 2. Fallback: fetch all video media and match by videopress_guid.
+        //    The GUID is NOT in the filename, so text search won't work — we need mime_type scan.
+        var components = URLComponents(string: "https://public-api.wordpress.com/rest/v1.1/sites/\(site.id)/media")!
+        components.queryItems = [
+            URLQueryItem(name: "mime_type", value: "video"),
+            URLQueryItem(name: "number", value: "100"),
+            URLQueryItem(name: "fields", value: "ID,URL,videopress_guid")
+        ]
+        var mediaRequest = URLRequest(url: components.url!)
+        mediaRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        guard let (data, response) = try? await URLSession.shared.data(for: mediaRequest),
+              (response as? HTTPURLResponse)?.statusCode == 200 else {
+            print("[VideoPress] Media library fetch failed for \(guid)")
+            return nil
+        }
+        guard let list = try? Self.decoder.decode(MediaListResponse.self, from: data) else {
+            print("[VideoPress] Media library decode failed for \(guid)")
+            return nil
+        }
+        guard let item = list.media.first(where: { $0.videoPressGuid == guid }),
+              let urlString = item.url,
+              let url = URL(string: urlString) else {
+            print("[VideoPress] GUID \(guid) not found in \(list.media.count) media items")
+            return nil
+        }
+        print("[VideoPress] Media library resolved \(guid) → \(url)")
+        return url
     }
 
     private static let decoder: JSONDecoder = {
@@ -230,6 +269,27 @@ struct WordPressPost: Identifiable, Decodable {
             return URL(string: "videopress://\(String(raw[range]))")
         }
 
+        // 4. VideoPress iframe embed: src='https://videopress.com/embed/{guid}...'
+        if let regex = try? NSRegularExpression(pattern: #"videopress\.com/embed/([A-Za-z0-9]+)"#),
+           let match = regex.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)),
+           let range = Range(match.range(at: 1), in: raw) {
+            return URL(string: "videopress://\(String(raw[range]))")
+        }
+
+        // 5. Gutenberg VideoPress block: <!-- wp:videopress/video {"guid":"abc","src":"https:\/\/..."} /-->
+        //    Try src first (the correct CDN URL), fall back to guid for API resolution.
+        if let srcRegex = try? NSRegularExpression(pattern: #""src"\s*:\s*"(https?(?:\\\/|\/)[^"]+)""#, options: []),
+           let match = srcRegex.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)),
+           let range = Range(match.range(at: 1), in: raw) {
+            let urlString = String(raw[range]).replacingOccurrences(of: "\\/", with: "/")
+            if let url = URL(string: urlString) { return url }
+        }
+        if let guidRegex = try? NSRegularExpression(pattern: #"wp:videopress/video\s+\{[^}]*"guid"\s*:\s*"([^"]+)""#, options: []),
+           let match = guidRegex.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)),
+           let range = Range(match.range(at: 1), in: raw) {
+            return URL(string: "videopress://\(String(raw[range]))")
+        }
+
         return nil
     }
 
@@ -272,12 +332,18 @@ private struct VideoPressInfo: Decodable {
     let original: String?
     let mp4: MP4Formats?
     struct MP4Formats: Decodable {
+        let original: String?  // VideoPress-generated filename — the primary URL
         let hd: String?
         let std: String?
     }
     var bestURL: URL? {
-        [original, mp4?.hd, mp4?.std].lazy.compactMap { $0 }.compactMap { URL(string: $0) }.first
+        [mp4?.original, mp4?.hd, mp4?.std, original]
+            .lazy.compactMap { $0 }.compactMap { URL(string: $0) }.first
     }
+}
+
+private struct MediaListResponse: Decodable {
+    let media: [MediaUploadResponse.MediaItem]
 }
 
 private struct MediaUploadResponse: Decodable {
