@@ -63,6 +63,20 @@ struct WordPressPostManager {
         }
     }
 
+    func updateMessage(id: Int, text: String) async throws -> WordPressPost {
+        let title = text.isEmpty
+            ? Self.timestampTitle("Note")
+            : String(text.prefix(60)).trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await updatePost(id: id, params: ["title": title, "content": text, "format": "aside"])
+    }
+
+    func updateLink(id: Int, url: String, title: String, description: String = "") async throws -> WordPressPost {
+        let resolvedTitle = title.isEmpty ? (URL(string: url)?.host ?? url) : title
+        var content = "<a href=\"\(url)\">\(resolvedTitle)</a>"
+        if !description.isEmpty { content += "\n\n<p>\(description)</p>" }
+        return try await updatePost(id: id, params: ["title": resolvedTitle, "content": content, "format": "link"])
+    }
+
     func postFile(data: Data, filename: String, mimeType: String) async throws {
         let (_, mediaURL) = try await uploadMedia(data: data, mimeType: mimeType, filename: filename)
         let content = mediaURL ?? ""
@@ -76,6 +90,23 @@ struct WordPressPostManager {
         f.dateStyle = .medium
         f.timeStyle = .short
         return "\(prefix) – \(f.string(from: Date()))"
+    }
+
+    private func updatePost(id: Int, params: [String: Any]) async throws -> WordPressPost {
+        let url = URL(string: "https://public-api.wordpress.com/rest/v1.1/sites/\(site.id)/posts/\(id)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body = params
+        body["status"] = "publish"
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            let detail = String(data: data, encoding: .utf8) ?? "unknown"
+            throw PostError.postFailed(detail)
+        }
+        return try Self.decoder.decode(WordPressPost.self, from: data)
     }
 
     private func createPost(title: String, content: String, featuredMediaID: Int? = nil, format: String? = nil, tags: [String] = []) async throws {
@@ -236,7 +267,7 @@ struct WordPressPostManager {
 
 // MARK: - Post model
 
-struct WordPressPost: Identifiable, Decodable {
+struct WordPressPost: Identifiable, Decodable, Equatable {
     let id: Int
     let title: String
     let date: Date
@@ -245,6 +276,10 @@ struct WordPressPost: Identifiable, Decodable {
     let format: String?
     let rawContent: String?
     private let tags: [String: TagStub]?
+    
+    static func == (lhs: WordPressPost, rhs: WordPressPost) -> Bool {
+        lhs.id == rhs.id
+    }
 
     var fileURL: URL? {
         guard let raw = rawContent else { return nil }

@@ -7,6 +7,7 @@ import QuickLookThumbnailing
 import LinkPresentation
 import AVKit
 import PDFKit
+import SafariServices
 
 // MARK: - Post Status
 
@@ -55,6 +56,18 @@ struct MainGridView: View {
     @State private var postStatus: PostStatus?
     @State private var postingTask: Task<Void, Never>?
 
+    // Tile preview state
+    @State private var quickLookURL: URL?
+    @State private var isPreparingPreview = false
+    @State private var safariURL: URL?
+    @State private var textPreviewPost: WordPressPost?
+    @State private var videoPreviewPost: WordPressPost?
+    @State private var videoPreviewPlayer: AVPlayer?
+
+    // Edit state
+    @State private var editTextPost: WordPressPost?
+    @State private var editLinkPost: WordPressPost?
+
     private var filteredPosts: [WordPressPost] {
         guard let filter = activeFilter else { return posts }
         return posts.filter { post in
@@ -97,16 +110,13 @@ struct MainGridView: View {
                     spacing: 16
                 ) {
                     ForEach(filteredPosts) { post in
-                        NavigationLink {
-                            if let token = auth.token, let site = auth.selectedSite {
-                                PostDetailView(post: post, token: token, site: site) {
-                                    posts.removeAll { $0.id == post.id }
-                                }
-                            }
+                        Button {
+                            handleTileTap(post)
                         } label: {
                             PostGridCard(post: post)
                         }
                         .buttonStyle(.plain)
+                        .contextMenu { tileContextMenu(for: post) }
                         .onAppear {
                             if hasMore && post.id == posts.last?.id {
                                 Task { await loadMorePosts() }
@@ -133,7 +143,7 @@ struct MainGridView: View {
     private var filterLabel: String? {
         switch activeFilter {
         case .photo:   return "Photos"
-        case .message: return "Text"
+        case .message: return "Thoughts"
         case .link:    return "Links"
         case .file:    return "Files"
         case nil:      return nil
@@ -170,7 +180,7 @@ struct MainGridView: View {
                             Label("Photos", systemImage: "photo")
                         }
                         Button { activeFilter = .message } label: {
-                            Label("Text", systemImage: "text.bubble")
+                            Label("Thoughts", systemImage: "text.bubble")
                         }
                         Button { activeFilter = .link } label: {
                             Label("Links", systemImage: "link")
@@ -192,7 +202,7 @@ struct MainGridView: View {
                             Label("Photos", systemImage: "photo")
                         }
                         Button { showTextComposer = true } label: {
-                            Label("Text", systemImage: "text.bubble")
+                            Label("Thoughts", systemImage: "text.bubble")
                         }
                         Button { showLinkComposer = true } label: {
                             Label("Links", systemImage: "link")
@@ -257,6 +267,76 @@ struct MainGridView: View {
             }
         }
         .animation(.spring(response: 0.4), value: postStatus)
+
+        // Preview loading spinner (shown while downloading for QuickLook)
+        .overlay {
+            if isPreparingPreview {
+                ZStack {
+                    Color.black.opacity(0.15).ignoresSafeArea()
+                    ProgressView()
+                        .padding(20)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                }
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: isPreparingPreview)
+
+        // QuickLook (photos, image files, other files)
+        .quickLookPreview($quickLookURL)
+
+        // Safari (links)
+        .sheet(isPresented: Binding(
+            get: { safariURL != nil },
+            set: { if !$0 { safariURL = nil } }
+        )) {
+            if let url = safariURL {
+                SafariSheet(url: url)
+                    .ignoresSafeArea()
+            }
+        }
+
+        // Text bottom sheet
+        .sheet(item: $textPreviewPost) { post in
+            TextTilePreviewSheet(post: post)
+        }
+
+        // Video full-screen cover
+        .fullScreenCover(item: $videoPreviewPost) { _ in
+            ZStack {
+                Color.black.ignoresSafeArea()
+                if let player = videoPreviewPlayer {
+                    VideoTilePreviewCover(player: player, onDismiss: { videoPreviewPost = nil })
+                        .ignoresSafeArea()
+                } else {
+                    ProgressView().tint(.white)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+        }
+        .onChange(of: videoPreviewPost) { _, newPost in
+            if newPost == nil {
+                videoPreviewPlayer?.pause()
+                videoPreviewPlayer = nil
+            }
+        }
+
+        // Edit sheets
+        .sheet(item: $editTextPost) { post in
+            if let token = auth.token, let site = auth.selectedSite {
+                TextComposerSheet(
+                    token: token, site: site, editPost: post,
+                    onEdit: { label, action in startEditing(label: label, action: action) }
+                ) { _, _ in }
+            }
+        }
+        .sheet(item: $editLinkPost) { post in
+            if let token = auth.token, let site = auth.selectedSite {
+                LinkComposerSheet(
+                    token: token, site: site, editPost: post,
+                    onEdit: { label, action in startEditing(label: label, action: action) }
+                ) { _, _ in }
+            }
+        }
     }
 
     // MARK: - Photo handling
@@ -325,6 +405,27 @@ struct MainGridView: View {
         }
     }
 
+    func startEditing(label: String, action: @escaping () async throws -> WordPressPost) {
+        postingTask?.cancel()
+        postStatus = PostStatus(kind: .posting, message: "Updating…")
+        postingTask = Task {
+            do {
+                let updated = try await action()
+                guard !Task.isCancelled else { return }
+                postStatus = PostStatus(kind: .success, message: "\(label) updated!")
+                if let i = posts.firstIndex(where: { $0.id == updated.id }) {
+                    posts[i] = updated
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                postStatus = PostStatus(kind: .failure, message: error.localizedDescription)
+            }
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            postStatus = nil
+        }
+    }
+
     // MARK: - Feed
 
     private func loadPosts() async {
@@ -341,6 +442,71 @@ struct MainGridView: View {
         }
     }
 
+    // MARK: - Tile preview
+
+    private func handleTileTap(_ post: WordPressPost) {
+        let isFile = post.tagSlugs.contains("folder-file")
+        let fileExt = (post.displayTitle as NSString).pathExtension.lowercased()
+
+        if post.format == "link", let url = post.linkURL {
+            safariURL = url
+        } else if post.format == "aside" {
+            textPreviewPost = post
+        } else if post.format == "image",
+                  let urlStr = post.featuredImageURL,
+                  let url = URL(string: urlStr) {
+            let filename = url.lastPathComponent.isEmpty ? "photo.jpg" : url.lastPathComponent
+            Task { await prepareQuickLook(url: url, filename: filename, postId: post.id) }
+        } else if isFile && PostRowView.videoExtensions.contains(fileExt) {
+            Task { await prepareVideoPreview(post: post) }
+        } else if isFile, let fileURL = post.fileURL {
+            Task { await prepareQuickLook(url: fileURL, filename: post.displayTitle, postId: post.id) }
+        }
+    }
+
+    private func prepareQuickLook(url: URL, filename: String, postId: Int) async {
+        isPreparingPreview = true
+        defer { isPreparingPreview = false }
+        let dest = FileManager.default.temporaryDirectory
+            .appendingPathComponent("folder_ql_\(postId)_\(filename)")
+        do {
+            if !FileManager.default.fileExists(atPath: dest.path) {
+                let (tmp, _) = try await URLSession.shared.download(from: url)
+                try FileManager.default.moveItem(at: tmp, to: dest)
+            }
+            quickLookURL = dest
+        } catch {}
+    }
+
+    private func prepareVideoPreview(post: WordPressPost) async {
+        guard let url = post.fileURL else { return }
+        videoPreviewPost = post  // show cover immediately (buffering state)
+
+        let guid: String?
+        if url.scheme == "videopress" {
+            guid = url.host
+        } else if url.host == "videos.files.wordpress.com" {
+            guid = url.pathComponents.dropFirst().first
+        } else {
+            guid = nil
+        }
+
+        let playbackURL: URL
+        if let guid, !guid.isEmpty, let pm = postManager,
+           let resolved = await pm.fetchVideoPressPlaybackURL(guid: guid) {
+            playbackURL = resolved
+        } else if url.scheme == "https" {
+            playbackURL = url
+        } else {
+            videoPreviewPost = nil
+            return
+        }
+
+        let player = AVPlayer(url: playbackURL)
+        videoPreviewPlayer = player
+        player.play()
+    }
+
     private func loadMorePosts() async {
         guard !isLoadingMore, !isLoading, hasMore, let pm = postManager else { return }
         isLoadingMore = true
@@ -350,6 +516,41 @@ struct MainGridView: View {
             hasMore = fetched.count == pageSize
             posts.append(contentsOf: fetched)
         } catch {}
+    }
+
+    // MARK: - Context menu
+
+    @ViewBuilder
+    private func tileContextMenu(for post: WordPressPost) -> some View {
+        Button { handleTileTap(post) } label: {
+            Label("Open", systemImage: "arrow.up.right")
+        }
+        if post.format == "aside" {
+            Button { editTextPost = post } label: {
+                Label("Edit", systemImage: "pencil")
+            }
+        } else if post.format == "link" {
+            Button { editLinkPost = post } label: {
+                Label("Edit", systemImage: "pencil")
+            }
+        }
+        Button(role: .destructive) {
+            deletePostFromFeed(post)
+        } label: {
+            Label("Remove", systemImage: "trash")
+        }
+    }
+
+    private func deletePostFromFeed(_ post: WordPressPost) {
+        posts.removeAll { $0.id == post.id }
+        guard let pm = postManager else { return }
+        Task {
+            do {
+                try await pm.deletePost(id: post.id)
+            } catch {
+                await loadPosts()
+            }
+        }
     }
 }
 
@@ -1398,11 +1599,29 @@ struct TypeSelectionSheet: View {
 struct TextComposerSheet: View {
     let token: String
     let site: WordPressSite
+    let editPost: WordPressPost?
+    let onEdit: ((String, @escaping () async throws -> WordPressPost) -> Void)?
     let onPost: (String, @escaping () async throws -> Void) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var text = ""
+    @State private var text: String
     @FocusState private var focused: Bool
+
+    init(token: String, site: WordPressSite, editPost: WordPressPost? = nil,
+         onEdit: ((String, @escaping () async throws -> WordPressPost) -> Void)? = nil,
+         onPost: @escaping (String, @escaping () async throws -> Void) -> Void) {
+        self.token = token
+        self.site = site
+        self.editPost = editPost
+        self.onEdit = onEdit
+        self.onPost = onPost
+        let initial = editPost.map { p in
+            (p.rawContent ?? p.displayTitle)
+                .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } ?? ""
+        self._text = State(initialValue: initial)
+    }
 
     private var postManager: WordPressPostManager { WordPressPostManager(token: token, site: site) }
 
@@ -1415,14 +1634,20 @@ struct TextComposerSheet: View {
                         .focused($focused)
                 }
             }
-            .navigationTitle("Text")
+            .navigationTitle(editPost == nil ? "Thoughts" : "Edit Thoughts")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Post") {
+                    Button(editPost == nil ? "Post" : "Save") {
                         let t = text; let pm = postManager
-                        onPost("Text") { try await pm.postMessage(t) }
+                        if let post = editPost, let onEdit {
+                            onEdit("Thoughts") { try await pm.updateMessage(id: post.id, text: t) }
+                        } else if let post = editPost {
+                            onPost("Thoughts") { _ = try await pm.updateMessage(id: post.id, text: t) }
+                        } else {
+                            onPost("Thoughts") { try await pm.postMessage(t) }
+                        }
                         dismiss()
                     }
                 }
@@ -1440,14 +1665,46 @@ struct TextComposerSheet: View {
 struct LinkComposerSheet: View {
     let token: String
     let site: WordPressSite
+    let editPost: WordPressPost?
+    let onEdit: ((String, @escaping () async throws -> WordPressPost) -> Void)?
     let onPost: (String, @escaping () async throws -> Void) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var url = ""
-    @State private var title = ""
-    @State private var linkDescription = ""
-    @State private var fetcher = LinkMetadataFetcher()
+    @State private var url: String
+    @State private var title: String
+    @State private var linkDescription: String
+    @State private var fetcher: LinkMetadataFetcher
     @FocusState private var focused: Bool
+
+    init(token: String, site: WordPressSite, editPost: WordPressPost? = nil,
+         onEdit: ((String, @escaping () async throws -> WordPressPost) -> Void)? = nil,
+         onPost: @escaping (String, @escaping () async throws -> Void) -> Void) {
+        self.token = token
+        self.site = site
+        self.editPost = editPost
+        self.onEdit = onEdit
+        self.onPost = onPost
+        self._fetcher = State(initialValue: LinkMetadataFetcher())
+        if let post = editPost {
+            self._url = State(initialValue: post.linkURL?.absoluteString ?? "")
+            self._title = State(initialValue: post.displayTitle)
+            let raw = post.rawContent ?? ""
+            let noLink: String
+            if let regex = try? NSRegularExpression(pattern: "<a[^>]*>.*?</a>", options: [.caseInsensitive, .dotMatchesLineSeparators]) {
+                noLink = regex.stringByReplacingMatches(in: raw, range: NSRange(raw.startIndex..., in: raw), withTemplate: "")
+            } else {
+                noLink = raw
+            }
+            let plain = noLink
+                .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            self._linkDescription = State(initialValue: plain)
+        } else {
+            self._url = State(initialValue: "")
+            self._title = State(initialValue: "")
+            self._linkDescription = State(initialValue: "")
+        }
+    }
 
     private var postManager: WordPressPostManager { WordPressPostManager(token: token, site: site) }
 
@@ -1514,14 +1771,20 @@ struct LinkComposerSheet: View {
                         .lineLimit(3...)
                 }
             }
-            .navigationTitle("Link")
+            .navigationTitle(editPost == nil ? "Link" : "Edit Link")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Post") {
+                    Button(editPost == nil ? "Post" : "Save") {
                         let u = normalizedURL(url); let t = title; let d = linkDescription; let pm = postManager
-                        onPost("Link") { try await pm.postLink(url: u, title: t, description: d) }
+                        if let post = editPost, let onEdit {
+                            onEdit("Link") { try await pm.updateLink(id: post.id, url: u, title: t, description: d) }
+                        } else if let post = editPost {
+                            onPost("Link") { _ = try await pm.updateLink(id: post.id, url: u, title: t, description: d) }
+                        } else {
+                            onPost("Link") { try await pm.postLink(url: u, title: t, description: d) }
+                        }
                         dismiss()
                     }
                     .disabled(url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -1533,7 +1796,6 @@ struct LinkComposerSheet: View {
             focused = true
         }
         .onChange(of: url) { _, newURL in
-            // Clear fields and re-fetch whenever the URL changes
             title = ""
             linkDescription = ""
             fetcher.schedule(urlString: normalizedURL(newURL))
