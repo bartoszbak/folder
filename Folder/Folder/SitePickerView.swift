@@ -45,11 +45,6 @@ struct SitePickerView: View {
                                     Text(site.url)
                                         .font(.footnote)
                                         .foregroundStyle(Color(.secondaryLabel))
-                                    if site.isPrivate {
-                                        Text("Private site")
-                                            .font(.caption2)
-                                            .foregroundStyle(Color(.tertiaryLabel))
-                                    }
                                 }
                                 .padding(.vertical, 4)
                             }
