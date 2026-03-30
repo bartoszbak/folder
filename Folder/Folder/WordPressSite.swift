@@ -5,6 +5,7 @@ struct WordPressSite: Identifiable, Hashable, Sendable {
     let name: String
     let url: String
     let iconURL: String?
+    let isPrivate: Bool
 }
 
 extension WordPressSite: Codable {
@@ -17,7 +18,8 @@ extension WordPressSite: Codable {
         case name
         case url = "URL"
         case icon
-        case iconURL  // flat key used when persisting to UserDefaults
+        case iconURL   // flat key used when persisting to UserDefaults
+        case isPrivate = "is_private"
     }
 
     nonisolated init(from decoder: Decoder) throws {
@@ -28,6 +30,8 @@ extension WordPressSite: Codable {
         // API response uses nested icon.img; persisted JSON uses flat iconURL
         iconURL = try c.decodeIfPresent(Icon.self, forKey: .icon)?.img
             ?? c.decodeIfPresent(String.self, forKey: .iconURL)
+        // API returns is_private; persisted JSON uses isPrivate; absent = public
+        isPrivate = try c.decodeIfPresent(Bool.self, forKey: .isPrivate) ?? false
     }
 
     nonisolated func encode(to encoder: Encoder) throws {
@@ -36,6 +40,7 @@ extension WordPressSite: Codable {
         try c.encode(name, forKey: .name)
         try c.encode(url, forKey: .url)
         try c.encodeIfPresent(iconURL, forKey: .iconURL)
+        try c.encode(isPrivate, forKey: .isPrivate)
     }
 }
 

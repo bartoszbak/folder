@@ -144,6 +144,10 @@ struct MainGridView: View {
         filterLabel.map { "Folder / \($0)" } ?? "Folder"
     }
 
+    private var isPrivateSite: Bool {
+        auth.selectedSite?.isPrivate ?? false
+    }
+
     var body: some View {
         NavigationStack {
             feedContent
@@ -155,6 +159,14 @@ struct MainGridView: View {
             }
             .navigationTitle(navigationTitleString)
             .toolbar {
+                if isPrivateSite {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Label("Private site", systemImage: "lock.fill")
+                            .labelStyle(.iconOnly)
+                            .foregroundStyle(.secondary)
+                            .help("This is a private site — only members can see your posts.")
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button { showAccount = true } label: {
                         AvatarButton(url: auth.user?.avatarURL)

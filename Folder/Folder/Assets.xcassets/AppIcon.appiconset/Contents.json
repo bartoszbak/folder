@@ -13,7 +13,7 @@
           "value" : "dark"
         }
       ],
-      "filename" : "aFolder-iOS-Default-1024x1024@1x.png",
+      "filename" : "FolderDark-iOS-Dark-1024x1024@1x.png",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"
@@ -25,7 +25,7 @@
           "value" : "tinted"
         }
       ],
-      "filename" : "aFolder-iOS-Default-1024x1024@1x 1.png",
+      "filename" : "Folder-iOS-ClearLight-1024x1024@1x.png",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"
