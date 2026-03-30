@@ -92,7 +92,11 @@ struct WordPressPostManager {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard statusCode == 200 else {
+            if statusCode == 403 {
+                throw PostError.privateSiteUnauthorized
+            }
             let detail = String(data: data, encoding: .utf8) ?? "unknown"
             throw PostError.postFailed(detail)
         }
@@ -224,11 +228,13 @@ struct WordPressPostManager {
 
     enum PostError: LocalizedError {
         case postFailed(String), uploadFailed(String), fetchFailed(String)
+        case privateSiteUnauthorized
         var errorDescription: String? {
             switch self {
             case .postFailed(let d):  "Failed to create post: \(d)"
             case .uploadFailed(let d): "Upload rejected: \(d)"
             case .fetchFailed(let d): "Failed to load posts. \(d)"
+            case .privateSiteUnauthorized: "This site is private. Make sure you're logged in with an account that has access."
             }
         }
     }

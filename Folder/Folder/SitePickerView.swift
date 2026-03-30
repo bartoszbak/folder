@@ -32,12 +32,24 @@ struct SitePickerView: View {
                             HStack(spacing: 12) {
                                 SiteFavicon(urlString: site.iconURL)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(site.name)
-                                        .font(.body.weight(.semibold))
-                                        .foregroundStyle(Color(.label))
+                                    HStack(spacing: 4) {
+                                        Text(site.name)
+                                            .font(.body.weight(.semibold))
+                                            .foregroundStyle(Color(.label))
+                                        if site.isPrivate {
+                                            Image(systemName: "lock.fill")
+                                                .font(.caption)
+                                                .foregroundStyle(Color(.secondaryLabel))
+                                        }
+                                    }
                                     Text(site.url)
                                         .font(.footnote)
                                         .foregroundStyle(Color(.secondaryLabel))
+                                    if site.isPrivate {
+                                        Text("Private site")
+                                            .font(.caption2)
+                                            .foregroundStyle(Color(.tertiaryLabel))
+                                    }
                                 }
                                 .padding(.vertical, 4)
                             }
