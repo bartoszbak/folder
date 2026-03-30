@@ -18,10 +18,13 @@ struct WordPressPostManager {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard statusCode == 200 else {
+            if statusCode == 403 {
+                throw PostError.privateSiteUnauthorized
+            }
             let detail = String(data: data, encoding: .utf8) ?? "no body"
-            throw PostError.fetchFailed("\(status): \(detail)")
+            throw PostError.fetchFailed("\(statusCode): \(detail)")
         }
 
         return try Self.decoder.decode(PostsListResponse.self, from: data).posts
