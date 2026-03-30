@@ -72,26 +72,26 @@ struct MainGridView: View {
         return WordPressPostManager(token: token, site: site)
     }
 
-    @ViewBuilder
     private var feedContent: some View {
-        if (isLoading || !hasLoaded) && posts.isEmpty {
-            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let error = loadError, posts.isEmpty {
-            ContentUnavailableView {
-                Label("Couldn't Load", systemImage: "exclamationmark.triangle")
-            } description: {
-                Text(error)
-            } actions: {
-                Button("Retry") { Task { await loadPosts() } }
-            }
-        } else if posts.isEmpty {
-            ContentUnavailableView(
-                "Nothing here yet",
-                systemImage: "folder",
-                description: Text("Tap + to add your first post.")
-            )
-        } else {
-            ScrollView {
+        ScrollView {
+            if (isLoading || !hasLoaded) && posts.isEmpty {
+                ProgressView()
+                    .frame(maxWidth: .infinity, minHeight: 300)
+            } else if let error = loadError, posts.isEmpty {
+                ContentUnavailableView {
+                    Label("Couldn't Load", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button("Retry") { Task { await loadPosts() } }
+                }
+            } else if !isLoading && hasLoaded && posts.isEmpty {
+                ContentUnavailableView(
+                    "Nothing here yet",
+                    systemImage: "folder",
+                    description: Text("Tap + to add your first post.")
+                )
+            } else {
                 LazyVGrid(
                     columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)],
                     spacing: 16
@@ -107,29 +107,53 @@ struct MainGridView: View {
                             PostGridCard(post: post)
                         }
                         .buttonStyle(.plain)
-                    }
-                    if hasMore {
-                        Color.clear
-                            .frame(height: 1)
-                            .gridCellColumns(2)
-                            .onAppear { Task { await loadMorePosts() } }
+                        .onAppear {
+                            if hasMore && post.id == posts.last?.id {
+                                Task { await loadMorePosts() }
+                            }
+                        }
                     }
                 }
                 .padding(16)
                 if isLoadingMore {
                     ProgressView()
                         .frame(maxWidth: .infinity, alignment: .center)
-                        .padding()
+                        .padding(.bottom, 16)
+                } else if !hasMore && hasLoaded && !posts.isEmpty {
+                    Text("All caught up")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.bottom, 80)
                 }
             }
-            .refreshable { await loadPosts() }
         }
+    }
+
+    private var filterLabel: String? {
+        switch activeFilter {
+        case .photo:   return "Photos"
+        case .message: return "Text"
+        case .link:    return "Links"
+        case .file:    return "Files"
+        case nil:      return nil
+        }
+    }
+
+    private var navigationTitleString: String {
+        filterLabel.map { "Folder / \($0)" } ?? "Folder"
     }
 
     var body: some View {
         NavigationStack {
             feedContent
-            .navigationTitle("Folder")
+            .refreshable {
+                // Run loadPosts() as an unstructured task so SwiftUI re-renders
+                // during loading don't cancel it. Awaiting a non-throwing Task.value
+                // is not interrupted by parent cancellation, keeping the spinner alive.
+                await Task { await loadPosts() }.value
+            }
+            .navigationTitle(navigationTitleString)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button { showAccount = true } label: {
@@ -307,25 +331,24 @@ struct MainGridView: View {
         guard let pm = postManager else { return }
         isLoading = true
         loadError = nil
-        hasMore = true
         defer { isLoading = false; hasLoaded = true }
         do {
             let fetched = try await pm.fetchPosts(number: pageSize)
-            posts = fetched
             hasMore = fetched.count == pageSize
+            posts = fetched
         } catch {
             loadError = error.localizedDescription
         }
     }
 
     private func loadMorePosts() async {
-        guard !isLoadingMore, hasMore, let pm = postManager else { return }
+        guard !isLoadingMore, !isLoading, hasMore, let pm = postManager else { return }
         isLoadingMore = true
         defer { isLoadingMore = false }
         do {
             let fetched = try await pm.fetchPosts(number: pageSize, offset: posts.count)
-            posts.append(contentsOf: fetched)
             hasMore = fetched.count == pageSize
+            posts.append(contentsOf: fetched)
         } catch {}
     }
 }
@@ -555,11 +578,11 @@ struct LinkThumbnailView: View {
             guard let meta = try? await provider.startFetchingMetadata(for: url) else { return }
             let itemProvider = meta.imageProvider ?? meta.iconProvider
             guard let itemProvider else { return }
-            let cacheKey = key // Capture as local constant
+            let cacheKey = url.absoluteString // Capture as Sendable String
             await withCheckedContinuation { cont in
                 itemProvider.loadObject(ofClass: UIImage.self) { obj, _ in
                     if let img = obj as? UIImage {
-                        linkImageCache.setObject(img, forKey: cacheKey)
+                        linkImageCache.setObject(img, forKey: cacheKey as NSString)
                         Task { @MainActor in image = img }
                     }
                     cont.resume()
@@ -810,11 +833,11 @@ private struct LinkCardBackground: View {
             guard let meta = try? await provider.startFetchingMetadata(for: url) else { return }
             let itemProvider = meta.imageProvider ?? meta.iconProvider
             guard let itemProvider else { return }
-            let cacheKey = key // Capture as local constant
+            let cacheKey = url.absoluteString // Capture as Sendable String
             await withCheckedContinuation { cont in
                 itemProvider.loadObject(ofClass: UIImage.self) { obj, _ in
                     if let img = obj as? UIImage {
-                        linkImageCache.setObject(img, forKey: cacheKey)
+                        linkImageCache.setObject(img, forKey: cacheKey as NSString)
                         Task { @MainActor in image = img }
                     }
                     cont.resume()
@@ -898,7 +921,7 @@ private struct VideoThumbnailGridView: View {
     }
 
     private func frameFromURL(_ url: URL) async -> UIImage? {
-        let asset = AVAsset(url: url)
+        let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: 600, height: 600)
@@ -1141,7 +1164,8 @@ struct PostDetailView: View {
                 .frame(width: geo.size.width, height: containerHeight)
                 .position(x: geo.size.width / 2, y: containerHeight / 2)
             }
-            .frame(height: (UIScreen.main.bounds.width - 32) * 9 / 16 + 280)
+            .aspectRatio(16/9, contentMode: .fit)
+            .padding(.horizontal, 16)
             .padding(.top, 8)
         } else if isFile && fileExt == "pdf" {
             VStack(spacing: 0) {

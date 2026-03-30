@@ -19,7 +19,9 @@ struct WordPressPostManager {
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw PostError.fetchFailed
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let detail = String(data: data, encoding: .utf8) ?? "no body"
+            throw PostError.fetchFailed("\(status): \(detail)")
         }
 
         return try Self.decoder.decode(PostsListResponse.self, from: data).posts
@@ -221,12 +223,12 @@ struct WordPressPostManager {
     // MARK: - Errors
 
     enum PostError: LocalizedError {
-        case postFailed(String), uploadFailed(String), fetchFailed
+        case postFailed(String), uploadFailed(String), fetchFailed(String)
         var errorDescription: String? {
             switch self {
             case .postFailed(let d):  "Failed to create post: \(d)"
             case .uploadFailed(let d): "Upload rejected: \(d)"
-            case .fetchFailed:         "Failed to load posts."
+            case .fetchFailed(let d): "Failed to load posts. \(d)"
             }
         }
     }

@@ -12,8 +12,8 @@ final class WordPressAuthManager: NSObject {
 
     var isAuthenticated: Bool { token != nil }
 
-    private static let selectedSiteKey = "selected_wordpress_site"
-    private static let userKey = "wordpress_user"
+    private nonisolated static let selectedSiteKey = "selected_wordpress_site"
+    private nonisolated static let userKey = "wordpress_user"
     private var session: ASWebAuthenticationSession?
 
     override init() {
@@ -22,24 +22,23 @@ final class WordPressAuthManager: NSObject {
             let stored = KeychainHelper.loadToken()
             let site = Self.loadSelectedSite()
             let user = Self.loadUser()
-            // Keep App Group in sync so the Share Extension always has fresh credentials
-            // even if selectSite() was called on a previous install or the group data was cleared.
-            let appGroup = UserDefaults(suiteName: KeychainHelper.appGroup)
-            if let stored {
-                appGroup?.set(stored, forKey: "shared_token")
-            } else {
-                appGroup?.removeObject(forKey: "shared_token")
-            }
-            if let site, let data = try? JSONEncoder().encode(site) {
-                appGroup?.set(data, forKey: "shared_site")
-            } else {
-                appGroup?.removeObject(forKey: "shared_site")
-            }
             await MainActor.run { [weak self] in
                 self?.token = stored
                 self?.selectedSite = site
                 self?.user = user
                 self?.isReady = true
+                // Sync App Group on the main actor to avoid Codable isolation warnings
+                let appGroup = UserDefaults(suiteName: KeychainHelper.appGroup)
+                if let stored {
+                    appGroup?.set(stored, forKey: "shared_token")
+                } else {
+                    appGroup?.removeObject(forKey: "shared_token")
+                }
+                if let site, let data = try? JSONEncoder().encode(site) {
+                    appGroup?.set(data, forKey: "shared_site")
+                } else {
+                    appGroup?.removeObject(forKey: "shared_site")
+                }
             }
         }
     }
@@ -162,12 +161,12 @@ final class WordPressAuthManager: NSObject {
 
     // MARK: - Persistence
 
-    private static func loadSelectedSite() -> WordPressSite? {
+    private nonisolated static func loadSelectedSite() -> WordPressSite? {
         guard let data = UserDefaults.standard.data(forKey: selectedSiteKey) else { return nil }
         return try? JSONDecoder().decode(WordPressSite.self, from: data)
     }
 
-    private static func loadUser() -> WordPressUser? {
+    private nonisolated static func loadUser() -> WordPressUser? {
         guard let data = UserDefaults.standard.data(forKey: userKey) else { return nil }
         return try? JSONDecoder().decode(WordPressUser.self, from: data)
     }
@@ -194,6 +193,7 @@ final class WordPressAuthManager: NSObject {
 // MARK: - ASWebAuthenticationPresentationContextProviding
 
 extension WordPressAuthManager: ASWebAuthenticationPresentationContextProviding {
+    @MainActor
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
         let scene = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
