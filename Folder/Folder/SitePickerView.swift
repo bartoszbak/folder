@@ -3,6 +3,7 @@ import SwiftUI
 struct SitePickerView: View {
     @Environment(WordPressAuthManager.self) private var auth
     @State private var loadError: String?
+    @State private var pendingPrivateSite: WordPressSite?
 
     var body: some View {
         NavigationStack {
@@ -27,7 +28,11 @@ struct SitePickerView: View {
                 } else {
                     List(auth.sites) { site in
                         Button {
-                            auth.selectSite(site)
+                            if site.isPrivate {
+                                pendingPrivateSite = site
+                            } else {
+                                auth.selectSite(site)
+                            }
                         } label: {
                             HStack(spacing: 12) {
                                 SiteFavicon(urlString: site.iconURL)
@@ -63,6 +68,18 @@ struct SitePickerView: View {
             }
         }
         .task { await loadSites() }
+        .alert("Private Site", isPresented: Binding(
+            get: { pendingPrivateSite != nil },
+            set: { if !$0 { pendingPrivateSite = nil } }
+        )) {
+            Button("Select Anyway") {
+                if let site = pendingPrivateSite { auth.selectSite(site) }
+                pendingPrivateSite = nil
+            }
+            Button("Cancel", role: .cancel) { pendingPrivateSite = nil }
+        } message: {
+            Text("WordPress.com disables API access for private sites. You won't be able to view or post content until you switch the site visibility to Coming Soon in WordPress.com Settings.")
+        }
     }
 
     private func loadSites() async {

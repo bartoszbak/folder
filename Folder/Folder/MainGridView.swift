@@ -85,6 +85,12 @@ struct MainGridView: View {
                 } actions: {
                     Button("Retry") { Task { await loadPosts() } }
                 }
+            } else if !isLoading && hasLoaded && posts.isEmpty && isPrivateSite {
+                ContentUnavailableView {
+                    Label("Private Site", systemImage: "lock.fill")
+                } description: {
+                    Text("WordPress.com disables API access for private sites.\nSwitch your site visibility to Coming Soon in WordPress.com Settings to use it here.")
+                }
             } else if !isLoading && hasLoaded && posts.isEmpty {
                 ContentUnavailableView(
                     "Nothing here yet",
@@ -341,6 +347,10 @@ struct MainGridView: View {
 
     private func loadPosts() async {
         guard let pm = postManager else { return }
+        guard !isPrivateSite else {
+            hasLoaded = true
+            return
+        }
         isLoading = true
         loadError = nil
         defer { isLoading = false; hasLoaded = true }
