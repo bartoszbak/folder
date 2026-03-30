@@ -22,7 +22,9 @@ Folder/
 ├── Folder/                     # Main app target
 │   ├── FolderApp.swift         # @main entry point
 │   ├── ContentView.swift       # Root view (login → site picker → main feed)
-│   ├── MainGridView.swift      # Primary feed UI with compose menus and filters
+│   ├── MainGridView.swift      # Primary feed UI — 2-column grid, compose menus, filters
+│   │                           #   PostGridCard + PhotoGridCard, LinkGridCard, TextGridCard,
+│   │                           #   FileGridCard, LinkCardBackground, GridTypeBadge
 │   ├── SitePickerView.swift    # Site selection after login
 │   ├── WordPressAuthManager.swift   # OAuth flow + site/user data
 │   ├── WordPressPostManager.swift   # API client (posts, media uploads)
@@ -45,7 +47,7 @@ patch_project.py                # Patches .xcodeproj to add FolderShare target
    enum WordPressSecrets {
        static let clientID = "<your-client-id>"
        static let clientSecret = "<your-client-secret>"
-       static let redirectURI = "com.bartbak.fastapp.folder://"
+       static let redirectURI = "com.bartbak.fastapp.folder://oauth"
    }
    ```
 3. Select the **Folder** scheme and run on iOS 26.2+ device or simulator

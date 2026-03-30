@@ -113,15 +113,14 @@ struct MainGridView: View {
                             .frame(height: 1)
                             .gridCellColumns(2)
                             .onAppear { Task { await loadMorePosts() } }
-                        if isLoadingMore {
-                            ProgressView()
-                                .gridCellColumns(2)
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                        }
                     }
                 }
                 .padding(16)
+                if isLoadingMore {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding()
+                }
             }
             .refreshable { await loadPosts() }
         }
@@ -555,10 +554,11 @@ struct LinkThumbnailView: View {
             guard let meta = try? await provider.startFetchingMetadata(for: url) else { return }
             let itemProvider = meta.imageProvider ?? meta.iconProvider
             guard let itemProvider else { return }
+            let cacheKey = key // Capture as local constant
             await withCheckedContinuation { cont in
                 itemProvider.loadObject(ofClass: UIImage.self) { obj, _ in
                     if let img = obj as? UIImage {
-                        linkImageCache.setObject(img, forKey: key)
+                        linkImageCache.setObject(img, forKey: cacheKey)
                         Task { @MainActor in image = img }
                     }
                     cont.resume()
@@ -694,26 +694,48 @@ private struct FileGridCard: View {
         }
     }
 
+    private var isPhoto: Bool {
+        let ext = (post.displayTitle as NSString).pathExtension.lowercased()
+        return PostRowView.imageExtensions.contains(ext)
+    }
+
     var body: some View {
         ZStack {
-            Color(.systemGray6)
-            VStack(spacing: 0) {
-                HStack {
+            if isPhoto, let url = post.fileURL {
+                GeometryReader { geo in
+                    AsyncImage(url: url) { phase in
+                        if let img = phase.image {
+                            img.resizable()
+                                .scaledToFill()
+                                .frame(width: geo.size.width, height: geo.size.height)
+                                .clipped()
+                        } else {
+                            Color(.systemGray5)
+                                .frame(width: geo.size.width, height: geo.size.height)
+                        }
+                    }
+                }
+            } else {
+                Color(.systemGray6)
+                VStack(spacing: 0) {
+                    HStack {
+                        Spacer()
+                        GridTypeBadge(systemImage: PostRowView.fileIcon(for: post.displayTitle).symbol)
+                    }
                     Spacer()
-                    GridTypeBadge(systemImage: PostRowView.fileIcon(for: post.displayTitle).symbol)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(fileTypeLabel)
+                            .font(.system(size: 15, weight: .medium))
+                        Text(post.displayTitle)
+                            .font(.system(size: 15, weight: .medium))
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Spacer()
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(fileTypeLabel)
-                        .font(.system(size: 15, weight: .medium))
-                    Text(post.displayTitle)
-                        .font(.system(size: 15, weight: .medium))
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .foregroundStyle(.primary)
+                .padding(8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .foregroundStyle(.primary)
-            .padding(16)
         }
     }
 }
@@ -760,10 +782,11 @@ private struct LinkCardBackground: View {
             guard let meta = try? await provider.startFetchingMetadata(for: url) else { return }
             let itemProvider = meta.imageProvider ?? meta.iconProvider
             guard let itemProvider else { return }
+            let cacheKey = key // Capture as local constant
             await withCheckedContinuation { cont in
                 itemProvider.loadObject(ofClass: UIImage.self) { obj, _ in
                     if let img = obj as? UIImage {
-                        linkImageCache.setObject(img, forKey: key)
+                        linkImageCache.setObject(img, forKey: cacheKey)
                         Task { @MainActor in image = img }
                     }
                     cont.resume()
