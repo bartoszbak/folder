@@ -1,6 +1,17 @@
 # Folder
 
-An iOS app for quickly saving and organising content — photos, links, thoughts, and files — to a personal WordPress.com blog. Share anything from any app in seconds using the system Share Extension.
+An iOS app for quickly saving and organizing content — photos, links, thoughts, and files — directly to your personal WordPress.com blog.
+
+Capture and share anything from any app in seconds using the native iOS Share Extension. No friction, no context switching — just save it and move on.
+
+## Requirements
+
+- A WordPress.com account
+- A publicly accessible website (required for REST API access)
+
+## In Progress
+
+A custom WordPress theme designed to make your saved content look beautiful.
 
 ## Features
 
