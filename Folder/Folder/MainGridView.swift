@@ -1909,6 +1909,12 @@ struct AccountSheet: View {
                     }
                 }
 
+                Section("Appearance") {
+                    NavigationLink(destination: AppIconPickerView()) {
+                        Label("App Icon", systemImage: "square.grid.2x2")
+                    }
+                }
+
                 Section {
                     Button(role: .destructive) {
                         dismiss()
