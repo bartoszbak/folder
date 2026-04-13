@@ -27,6 +27,10 @@ final class WordPressAuthManager: NSObject {
                 self?.selectedSite = site
                 self?.user = user
                 self?.isReady = true
+                // Refresh sites in the background so metadata (e.g. isPrivate) is always current
+                if stored != nil {
+                    Task { try? await self?.fetchSites() }
+                }
                 // Sync App Group on the main actor to avoid Codable isolation warnings
                 let appGroup = UserDefaults(suiteName: KeychainHelper.appGroup)
                 if let stored {
@@ -111,6 +115,10 @@ final class WordPressAuthManager: NSObject {
 
         let result = try JSONDecoder().decode(SitesResponse.self, from: data)
         sites = result.sites
+        // Refresh selectedSite so metadata (e.g. isPrivate) stays current
+        if let current = selectedSite, let updated = result.sites.first(where: { $0.id == current.id }) {
+            selectSite(updated)
+        }
     }
 
     func selectSite(_ site: WordPressSite) {

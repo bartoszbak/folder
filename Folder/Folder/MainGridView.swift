@@ -98,6 +98,12 @@ struct MainGridView: View {
                 } actions: {
                     Button("Retry") { Task { await loadPosts() } }
                 }
+            } else if !isLoading && hasLoaded && posts.isEmpty && isPrivateSite {
+                ContentUnavailableView {
+                    Label("Private Site", systemImage: "lock.fill")
+                } description: {
+                    Text("WordPress.com disables API access for private sites.\nSwitch your site visibility to Coming Soon in WordPress.com Settings to use it here.")
+                }
             } else if !isLoading && hasLoaded && posts.isEmpty {
                 ContentUnavailableView(
                     "Nothing here yet",
@@ -154,6 +160,10 @@ struct MainGridView: View {
         filterLabel.map { "Folder / \($0)" } ?? "Folder"
     }
 
+    private var isPrivateSite: Bool {
+        auth.selectedSite?.isPrivate ?? false
+    }
+
     var body: some View {
         NavigationStack {
             feedContent
@@ -165,6 +175,14 @@ struct MainGridView: View {
             }
             .navigationTitle(navigationTitleString)
             .toolbar {
+                if isPrivateSite {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Label("Private site", systemImage: "lock.fill")
+                            .labelStyle(.iconOnly)
+                            .foregroundStyle(.secondary)
+                            .help("This is a private site — only members can see your posts.")
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button { showAccount = true } label: {
                         AvatarButton(url: auth.user?.avatarURL)
@@ -430,6 +448,10 @@ struct MainGridView: View {
 
     private func loadPosts() async {
         guard let pm = postManager else { return }
+        guard !isPrivateSite else {
+            hasLoaded = true
+            return
+        }
         isLoading = true
         loadError = nil
         defer { isLoading = false; hasLoaded = true }
